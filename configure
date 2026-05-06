@@ -27,6 +27,18 @@ debug=0
 # optimization level
 olevel='-O3'
 
+# Link-time optimization. Off by default to avoid surprising consumers
+# whose toolchains may not have a matching LTO plugin or a current `ar`.
+# Enable explicitly with `--enable-lto` for the perf/lang VM hot path
+# (apply_binop, dispatch_one, vm_step) to be cross-translation-unit
+# inlined into callers.
+lto_flag=''
+lto_link_flag=''
+
+# Archiver command.  Set to gcc-ar/llvm-ar when LTO is enabled so that
+# the static archive carries the LTO plugin metadata required by linkers.
+ar_cmd='ar'
+
 # selected source files
 select_files='all'
 
@@ -136,6 +148,7 @@ get_params() {
             echo -e "\t--disable-macro=[macro1,macro2,...]"
             echo -e "\t--func"
             echo -e "\t--c99"
+            echo -e "\t--enable-lto"
             exit 0
         fi
         param_prefix=`echo $param|cut -d '=' -f 1`
@@ -156,6 +169,9 @@ get_params() {
             func_flag='-DMLN_FUNC_FLAG'
         elif [ $param_prefix == "--c99" ]; then
             c99_flag='-std=c99 -DMLN_C99 -D_POSIX_C_SOURCE=200112L'
+        elif [ $param_prefix == "--enable-lto" ]; then
+            lto_flag='-flto'
+            lto_link_flag='-flto'
         elif [ $param_prefix == "--select" ]; then
             select_files=$param_suffix
         elif [ $param_prefix == "--disable-macro" ]; then
@@ -411,7 +427,7 @@ generate_Makefile() {
     if [ $wasm -eq 1 ]; then
         echo -e "FLAGS\t\t= -Iinclude -c $debug $olevel $llvm_flag -s -mmutable-globals -mnontrapping-fptoint -msign-ext -Wemcc -DMLN_ROOT=\\\"$realpath\\\" -DMLN_NULL=\\\"$nullpath\\\" -DMLN_LANG_LIB=\\\"$melang_script_path\\\" -DMLN_LANG_DYLIB=\\\"$melang_dylib_path\\\" $CFLAGS" >> Makefile
     else
-        echo -e "FLAGS\t\t= -Iinclude -c -Wall $debug -Werror $mingw_cflags $olevel -fPIC -DMLN_ROOT=\\\"$realpath\\\" -DMLN_NULL=\\\"$nullpath\\\" -DMLN_LANG_LIB=\\\"$melang_script_path\\\" -DMLN_LANG_DYLIB=\\\"$melang_dylib_path\\\" $event_flag $sendfile_flag $writev_flag $unix98_flag $mmap_flag $func_flag $c99_flag $constructor_flag $msys2_flag $CFLAGS" >> Makefile
+        echo -e "FLAGS\t\t= -Iinclude -c -Wall $debug -Werror $mingw_cflags $olevel $lto_flag -fPIC -DMLN_ROOT=\\\"$realpath\\\" -DMLN_NULL=\\\"$nullpath\\\" -DMLN_LANG_LIB=\\\"$melang_script_path\\\" -DMLN_LANG_DYLIB=\\\"$melang_dylib_path\\\" $event_flag $sendfile_flag $writev_flag $unix98_flag $mmap_flag $func_flag $c99_flag $constructor_flag $msys2_flag $CFLAGS" >> Makefile
     fi
     if ! case $sysname in MINGW*) false;; esac; then
         if [ $wasm -eq 0 ]; then
@@ -452,17 +468,17 @@ generate_Makefile() {
     if [ $wasm -eq 1 ]; then
         echo -e "\temar rcs lib/\$(MELONA) \$(OBJS)" >> Makefile
     else
-        echo -e "\tar -r lib/\$(MELONA) \$(OBJS)" >> Makefile
+        echo -e "\t$ar_cmd -r lib/\$(MELONA) \$(OBJS)" >> Makefile
     fi
 
     if [ $wasm -eq 0 ]; then
         echo "\$(MELONSO) : \$(OBJS)" >> Makefile
         if [ $sysname = 'Linux' ]; then
-            echo -e "\t\$(CC) -o lib/\$(MELONSO) \$(OBJS) $debug -Wall -lpthread -Llib/ -ldl -shared -fPIC $LDFLAGS" >> Makefile
+            echo -e "\t\$(CC) -o lib/\$(MELONSO) \$(OBJS) $debug $lto_link_flag -Wall -lpthread -Llib/ -ldl -shared -fPIC $LDFLAGS" >> Makefile
         elif ! case $sysname in MINGW*) false;; esac; then
-            echo -e "\t\$(CC) -o lib/\$(MELONSO) \$(OBJS) $debug -Wall -lpthread -lWs2_32 -Llib/ -shared -fPIC $LDFLAGS" >> Makefile
+            echo -e "\t\$(CC) -o lib/\$(MELONSO) \$(OBJS) $debug $lto_link_flag -Wall -lpthread -lWs2_32 -Llib/ -shared -fPIC $LDFLAGS" >> Makefile
         else
-            echo -e "\t\$(CC) -o lib/\$(MELONSO) \$(OBJS) $debug -Wall -lpthread -Llib/ -lc -shared -fPIC $LDFLAGS" >> Makefile
+            echo -e "\t\$(CC) -o lib/\$(MELONSO) \$(OBJS) $debug $lto_link_flag -Wall -lpthread -Llib/ -lc -shared -fPIC $LDFLAGS" >> Makefile
         fi
     fi
     echo "install:" >> Makefile
@@ -560,6 +576,54 @@ after_get_params() {
     update_debug_flag
     detect_operating_system_support
     update_paths
+    # Select a plugin-aware archiver when LTO is enabled.  Done here (after
+    # all args are parsed) so that --cc= and --enable-lto can appear in any
+    # order on the command line.
+    #
+    # Detection strategy (most-specific first):
+    #  1. On MSYS2 CLANG64/CLANGARM64 the toolchain is Clang even if $cc
+    #     is just "gcc" or "cc"; trust MSYSTEM to pick llvm-ar.
+    #  2. Otherwise ask the compiler itself: if "$cc --version" mentions
+    #     "clang" (case-insensitive) use llvm-ar, else fall back to gcc-ar.
+    #  3. MSVC (cl.exe) uses its own /GL+/LTCG mechanism and does not use
+    #     an 'ar'-style archiver; --enable-lto has no effect on that path.
+    if [ -n "$lto_flag" ]; then
+        _ar_chosen=0
+        # MSYS2 Clang environments: trust the MSYSTEM variable directly
+        case ${MSYSTEM:-} in
+            CLANG64|CLANGARM64) ar_cmd='llvm-ar'; _ar_chosen=1 ;;
+        esac
+        # Query the compiler binary if not already determined
+        if [ $_ar_chosen -eq 0 ]; then
+            if $cc --version 2>/dev/null | grep -qi 'clang version'; then
+                ar_cmd='llvm-ar'
+            else
+                # For cross-GCC toolchains derive the prefixed gcc-ar.
+                # e.g. aarch64-linux-gnu-gcc-12 -> aarch64-linux-gnu-gcc-ar
+                # e.g. gcc-12 / gcc              -> gcc-ar
+                _cc_name=$(basename "$cc")
+                _cc_nosuf=$(printf '%s' "$_cc_name" | sed 's/-[0-9][0-9]*$//')
+                _ar_derived=$(printf '%s' "$_cc_nosuf" | sed 's/-\(gcc\|g++\)$/-gcc-ar/')
+                if [ "$_ar_derived" != "$_cc_nosuf" ]; then
+                    # Preserve directory prefix when $cc is an absolute/relative path
+                    _cc_dir=$(dirname "$cc")
+                    if [ "$_cc_dir" != "." ]; then
+                        ar_cmd="$_cc_dir/$_ar_derived"
+                    else
+                        ar_cmd="$_ar_derived"
+                    fi
+                else
+                    ar_cmd='gcc-ar'
+                fi
+            fi
+        fi
+        # Verify the chosen wrapper actually exists; fall back to plain ar
+        # with a warning rather than silently generating a broken Makefile.
+        if ! command -v "$ar_cmd" >/dev/null 2>&1; then
+            echo "Warning: $ar_cmd not found; falling back to ar (LTO may not work)"
+            ar_cmd='ar'
+        fi
+    fi
     get_source_files $select_files
     generate_Makefile
     generate_conf_file

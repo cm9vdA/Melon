@@ -198,6 +198,15 @@ struct mln_lang_scope_s {
     mln_lang_symbol_node_t          *sym_tail;
 };
 
+/* Cap on the number of recycled mln_lang_val_t / mln_lang_var_t we cache on
+ * the per-ctx freelists. Beyond this we fall back to the slab allocator so
+ * memory does not grow unbounded for long-running scripts. */
+#define M_LANG_VAL_FREELIST_MAX    4096
+#define M_LANG_VAR_FREELIST_MAX    4096
+/* Cap on the vm_frame_t freelist.  Frames are larger (opstack + slots) so a
+ * smaller cap is fine; 64 covers deep recursion warm-up in most scripts. */
+#define M_LANG_FRAME_FREELIST_MAX  64
+
 struct mln_lang_ctx_s {
     mln_lang_t                      *lang;
     mln_alloc_t                     *pool;
@@ -224,6 +233,18 @@ struct mln_lang_ctx_s {
     pthread_t                        owner;
 #endif
     mln_string_t                    *alias;
+    /* Recycled mln_lang_val_t / mln_lang_var_t. Tail-linked via the
+     * struct's existing 'next' field (safe — see audit in mln_lang.c). */
+    mln_lang_val_t                  *val_freelist;
+    mln_lang_var_t                  *var_freelist;
+    mln_size_t                       val_freelist_count;
+    mln_size_t                       var_freelist_count;
+    /* Recycled mln_lang_vm_frame_t objects.  Linked via the frame's own
+     * `prev` pointer (which is unused while the frame is off the active
+     * vm_frame_top chain).  Frames carry their opstack and slots buffers
+     * so they can be reused without re-allocating those inner arrays. */
+    void                            *vm_frame_freelist;
+    mln_size_t                       vm_frame_freelist_count;
     mln_u32_t                        sym_count:16;
     mln_u32_t                        ret_flag:1;
     /*flags for operator overloading*/
@@ -236,7 +257,30 @@ struct mln_lang_ctx_s {
     mln_u32_t                        op_real_flag:1;
     mln_u32_t                        op_str_flag:1;
     mln_u32_t                        quit:1;
-    mln_u32_t                        padding:6;
+    /* Phase F: top-level cutover. vm_top_attempted is set the first time
+     * mln_lang_run_handler sees this ctx — the handler compiles the
+     * top-level stm chain to bytecode and runs it on the VM. */
+    mln_u32_t                        vm_top_attempted:1;
+    /* Set when a function body could not be compiled by the VM (e.g. too
+     * many locals or loops).  While set, all EXTERNAL function calls use
+     * the AST stack-walker as a fallback so that the outer VM can resume
+     * via the awaiting_return path once the AST run-stack drains. */
+    mln_u32_t                        in_ast_fallback:1;
+    /* Cached at context-creation time from MELANG_VM_OFF: 1 = use AST walker,
+     * 0 = use VM.  Reading the environment only once per context (rather than
+     * on every event-loop slice or function call) prevents mid-run mode flips
+     * that could leave the run-stack or VM frame-stack in an inconsistent
+     * state.  Flexible switching is still supported: set MELANG_VM_OFF before
+     * calling mln_lang_run() and each new context will respect the current
+     * value. */
+    mln_u32_t                        vm_use_ast:1;
+    mln_u32_t                        padding:3;
+    /* Phase F3: heap-allocated stack of mln_lang_vm_frame_t. The VM is
+     * iterative — every opcode runs against ctx->vm_frame_top, function
+     * calls push frames, returns pop them. mln_lang_vm_step yields back
+     * to the run loop after a budget of opcodes so multiple ctxs can
+     * time-share the event loop (Melang's coroutine model). */
+    void                            *vm_frame_top;
 };
 
 struct mln_lang_resource_s {
@@ -283,8 +327,9 @@ struct mln_lang_var_s {
     mln_lang_val_t                  *val;
     mln_lang_set_detail_t           *in_set;
     mln_lang_var_t                  *prev;
-    mln_lang_var_t                  *next;
+    mln_lang_var_t                  *next; /* doubles as freelist link when var is on ctx->var_freelist */
     mln_uauto_t                      ref;
+    mln_lang_ctx_t                  *ctx; /* needed by free path to push to ctx->var_freelist */
 };
 
 typedef enum {
@@ -301,6 +346,23 @@ struct mln_lang_func_detail_s {
         mln_lang_internal        process;
         mln_lang_stm_t          *stm;
     } data;
+    /* Bytecode VM extension. Tries to compile the EXTERNAL function body to
+     * bytecode on first call. vm_state values:
+     *   0  = untried (or allocation failed on last attempt — will retry)
+     *   1  = compiled successfully; vm_chunk holds the ready chunk
+     *  -1  = permanently uncompilable (unsupported construct); falls back
+     *         to the AST walker transparently
+     * Note: mln_lang_vm_try_compile() returns 0 on allocation failure and
+     * -1 for structural reasons; both non-1 outcomes leave the caller
+     * falling back to the AST walker, but only -1 skips future attempts.
+     * vm_chunk is opaque mln_lang_vm_chunk_t* (see mln_lang_vm.h). int
+     * (not mln_s8_t) so -1 is reliably negative across char-signedness.
+     * vm_op_int_flag records ctx->op_int_flag at compile time; if the flag
+     * changes after Eval-injected overloads, the cached chunk is stale and
+     * must be recompiled. */
+    void                            *vm_chunk;
+    int                              vm_state;
+    int                              vm_op_int_flag;
 };
 
 typedef enum {
@@ -328,7 +390,7 @@ struct mln_lang_object_s {
 
 struct mln_lang_val_s {
     struct mln_lang_val_s           *prev;
-    struct mln_lang_val_s           *next;
+    struct mln_lang_val_s           *next; /* doubles as freelist link when val is on ctx->val_freelist */
     union {
         mln_s64_t                i;
         mln_u8_t                 b;
@@ -343,6 +405,7 @@ struct mln_lang_val_s {
     mln_u32_t                        ref;
     mln_lang_val_t                  *udata;
     mln_lang_func_detail_t          *func;
+    mln_lang_ctx_t                  *ctx; /* needed by free path to push to ctx->val_freelist */
     mln_u32_t                        not_modify:1;
 };
 

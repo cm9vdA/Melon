@@ -7,3 +7,9 @@ build/
 conf/melon.conf
 bazel-*
 MODULE.bazel*
+*.o
+
+# macOS finder metadata
+.DS_Store
+**/.DS_Store
+
