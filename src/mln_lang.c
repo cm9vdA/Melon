@@ -7889,7 +7889,7 @@ MLN_FUNC(static, mln_lang_var_t *, mln_lang_func_eval_process, (mln_lang_ctx_t *
     }
     path = val1->data.s;
     if (path->len && path->data[0] == '@' && ctx->filename != NULL) {
-        if ((p = strrchr((const char *)(ctx->filename->data), '/')) == NULL) {
+        if ((p = strrchr((char *)(ctx->filename->data), '/')) == NULL) {
             if (path->len > 1 && path->data[1] == '/') {
                 tmp.data = path->data + 2;
                 tmp.len = path->len - 2;
