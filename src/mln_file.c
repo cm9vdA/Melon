@@ -113,6 +113,7 @@ MLN_FUNC(, mln_file_t *, mln_file_open, (mln_fileset_t *fs, char *filepath), (fs
         reg_file_chain_add(&(fs->reg_free_head), &(fs->reg_free_tail), f);
         f->fset = fs;
         if (mln_hash_insert(fs->reg_file_hash, f->file_path->data, f) < 0) {
+            reg_file_chain_del(&(fs->reg_free_head), &(fs->reg_free_tail), f);
             close(f->fd);
             mln_string_free(f->file_path);
             mln_alloc_free(f);
