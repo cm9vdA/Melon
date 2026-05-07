@@ -538,61 +538,65 @@ MLN_FUNC(, int, mln_string_strseqcmp, (mln_string_t *s1, mln_string_t *s2), (s1,
 })
 
 MLN_FUNC(, int, mln_string_strcmp, (mln_string_t *s1, mln_string_t *s2), (s1, s2), {
-    if (s1 == s2 || s1->data == s2->data) return 0;
+    if (s1 == s2) return 0;
     if (s1->len > s2->len) return 1;
     if (s1->len < s2->len) return -1;
+    if (s1->data == s2->data) return 0;
     return mln_string_memcmp_core(s1->data, s2->data, s1->len);
 })
 
 MLN_FUNC(, int, mln_string_const_strcmp, (mln_string_t *s1, char *s2), (s1, s2), {
-    if (s1->data == (mln_u8ptr_t)s2) return 0;
     mln_u32_t len = strlen(s2);
     if (s1->len > len) return 1;
     if (s1->len < len) return -1;
+    if (s1->data == (mln_u8ptr_t)s2) return 0;
     return mln_string_memcmp_core(s1->data, (const mln_u8ptr_t)s2, len);
 })
 
 MLN_FUNC(, int, mln_string_strncmp, \
          (mln_string_t *s1, mln_string_t *s2, mln_u32_t n), (s1, s2, n), \
 {
-    if (s1 == s2 || s1->data == s2->data) return 0;
+    if (s1 == s2) return 0;
     if (s1->len < n || s2->len < n) return -1;
+    if (s1->data == s2->data) return 0;
     return mln_string_memcmp_core(s1->data, s2->data, n);
 })
 
 MLN_FUNC(, int, mln_string_const_strncmp, (mln_string_t *s1, char *s2, mln_u32_t n), (s1, s2, n), {
-    if (s1->data == (mln_u8ptr_t)s2) return 0;
     if (s1->len < n || strlen(s2) < n) return -1;
+    if (s1->data == (mln_u8ptr_t)s2) return 0;
     return mln_string_memcmp_core(s1->data, (const mln_u8ptr_t)s2, n);
 })
 
 MLN_FUNC(, int, mln_string_strcasecmp, (mln_string_t *s1, mln_string_t *s2), (s1, s2), {
-    if (s1 == s2 || s1->data == s2->data) return 0;
+    if (s1 == s2) return 0;
     if (s1->len > s2->len) return 1;
     if (s1->len < s2->len) return -1;
+    if (s1->data == s2->data) return 0;
     return mln_string_memcasecmp_core(s1->data, s2->data, s1->len);
 })
 
 MLN_FUNC(, int, mln_string_strncasecmp, \
          (mln_string_t *s1, mln_string_t *s2, mln_u32_t n), (s1, s2, n), \
 {
-    if (s1 == s2 || s1->data == s2->data) return 0;
+    if (s1 == s2) return 0;
     if (s1->len < n || s2->len < n) return -1;
+    if (s1->data == s2->data) return 0;
     return mln_string_memcasecmp_core(s1->data, s2->data, n);
 })
 
 MLN_FUNC(, int, mln_string_const_strcasecmp, (mln_string_t *s1, char *s2), (s1, s2), {
-    if (s1->data == (mln_u8ptr_t)s2) return 0;
     mln_u32_t len = strlen(s2);
     if (s1->len > len) return 1;
     if (s1->len < len) return -1;
+    if (s1->data == (mln_u8ptr_t)s2) return 0;
     return mln_string_memcasecmp_core(s1->data, (const mln_u8ptr_t)s2, len);
 })
 
 MLN_FUNC(, int, mln_string_const_strncasecmp, (mln_string_t *s1, char *s2, mln_u32_t n), (s1, s2, n), {
-    if (s1->data == (mln_u8ptr_t)s2) return 0;
     mln_u32_t len = strlen(s2);
     if (s1->len < n || len < n) return -1;
+    if (s1->data == (mln_u8ptr_t)s2) return 0;
     return mln_string_memcasecmp_core(s1->data, (const mln_u8ptr_t)s2, n);
 })
 
