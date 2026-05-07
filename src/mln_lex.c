@@ -113,7 +113,9 @@ mln_lex_input_t *mln_lex_input_new(mln_lex_t *lex, mln_u32_t type, mln_string_t 
                 n = snprintf(path, sizeof(path) - 1, "./");
             else
                 n = snprintf(path, sizeof(path) - 1, "%s/", lex->cur->dir->data);
+            if (n < 0 || (mln_size_t)n >= sizeof(path) - 1) n = (int)(sizeof(path) - 1);
             len = (data->len - 1) >= 1024? 1023: (data->len - 1);
+            if ((mln_size_t)n + len >= sizeof(path)) len = sizeof(path) - 1 - (mln_size_t)n;
             memcpy(path + n, data->data + 1, len);
         } else {
             len = data->len >= 1024? 1023: data->len;
@@ -140,6 +142,7 @@ mln_lex_input_t *mln_lex_input_new(mln_lex_t *lex, mln_u32_t type, mln_string_t 
                 while (end != NULL) {
                     *end = 0;
                     n = snprintf(tmp_path, sizeof(tmp_path)-1, "%s/%s", melang_path, path);
+                    if (n < 0 || (mln_size_t)n >= sizeof(tmp_path)) n = (int)(sizeof(tmp_path) - 1);
                     tmp_path[n] = 0;
 #if defined(MSVC)
                     if (!_access(tmp_path, 0)) {
@@ -157,6 +160,7 @@ mln_lex_input_t *mln_lex_input_new(mln_lex_t *lex, mln_u32_t type, mln_string_t 
                 if (!found) {
                     if (*melang_path) {
                         n = snprintf(tmp_path, sizeof(tmp_path)-1, "%s/%s", melang_path, path);
+                        if (n < 0 || (mln_size_t)n >= sizeof(tmp_path)) n = (int)(sizeof(tmp_path) - 1);
                         tmp_path[n] = 0;
                         li->fd = open(tmp_path, O_RDONLY);
                         r = mln_lex_base_dir(lex, li, tmp_path, err);
@@ -167,6 +171,7 @@ mln_lex_input_t *mln_lex_input_new(mln_lex_t *lex, mln_u32_t type, mln_string_t 
             } else {
 goon:
                 n = snprintf(tmp_path, sizeof(tmp_path)-1, "%s/%s", mln_path_melang_lib(), path);
+                if (n < 0 || (mln_size_t)n >= sizeof(tmp_path)) n = (int)(sizeof(tmp_path) - 1);
                 tmp_path[n] = 0;
                 li->fd = open(tmp_path, O_RDONLY);
                 r = mln_lex_base_dir(lex, li, tmp_path, err);
